@@ -14,7 +14,10 @@ submission metadata, and awarded points.
 - Five commonwealths: Sierra, Amarillo, Franklin, Lincoln, and Dixieland
 - 21 House districts
 - One governor and three Senate classes per commonwealth
-- Presidential and midterm cycles with separate primary/general stages
+- One integrated primary-to-general sequence inside each election cycle
+- Draft, signup, primary campaign, primary results, general campaign, general
+  results, paused, and closed phases
+- Permanent closed-cycle deletion with exact-name confirmation
 - One Senate class and selected governor races configured when a cycle is created
 - One active race per candidate in each cycle
 - Democratic, Republican, Reform, and Independent parties
@@ -25,7 +28,10 @@ submission metadata, and awarded points.
 - Speeches: 1–4 points, one point per 500 characters, 2,000-character maximum,
   one use
 - Exact-file hashing and normalized copied-speech detection
-- Content locked to its first candidate and race for the cycle
+- Content locked to its first candidate and race during the current election
+  phase
+- Primary submissions, points, votes, adjustments, and duplicate-use records
+  permanently reset when general campaigning opens
 - Different original content may be submitted immediately
 - Public preview with Confirm and Cancel buttons
 - FEC duplicate exceptions with a required audit reason
@@ -37,7 +43,9 @@ submission metadata, and awarded points.
 - Primary results are calculated separately by party
 - Percentage-point buffs and debuffs with required reasons
 - Ties are reported to the FEC and never resolved randomly
-- Signup, campaign, and voting deadlines with 24-hour, 6-hour, and 1-hour notices
+- Separate signup, primary campaign, primary voting, general campaign, and
+  general voting deadlines with 24-hour, 6-hour, and 1-hour notices
+- State targeting restricted to the official commonwealth or House district
 - Full PostgreSQL audit history
 
 ## Discord commands
@@ -61,6 +69,7 @@ submission metadata, and awarded points.
 
 - `/fec cycle-create`
 - `/fec cycle-phase`
+- `/fec cycle-delete`
 - `/fec deadline-set`
 - `/fec candidate-add`
 - `/fec candidate-status`
@@ -73,24 +82,22 @@ submission metadata, and awarded points.
 
 ## Normal election workflow
 
-1. An election administrator creates a cycle with `/fec cycle-create`.
-2. The FEC sets deadlines with `/fec deadline-set`.
-3. The FEC changes the phase to `signup` with `/fec cycle-phase`.
-4. Citizens register using `/candidate register`.
-5. The FEC changes the phase to `campaign`.
-6. Citizens use `/campaign submit` in the configured campaign channel.
-7. For nonpresidential races, the FEC enters each candidate's raw votes with
-   `/fec votes-enter`.
-8. The FEC adds any approved buffs or debuffs with `/fec adjustment-add`.
-9. The FEC privately checks the result using `/fec results` with the Calculate
-   action.
-10. The FEC repeats `/fec results` with the Publish action when ready.
-11. Presidential cycles instead produce a candidate-by-state campaign-point CSV.
-12. The FEC closes the cycle using `/fec cycle-phase`.
-
-For a presidential primary, the bot reports campaign points but does not choose a
-nominee. The FEC marks the official nominee with `/fec nominee-set`; that candidate
-can then use `/candidate running-mate`.
+1. The Secretary creates one election with `/fec cycle-create`.
+2. The FEC sets signup and separate primary/general deadlines.
+3. The FEC opens `signup`; citizens register with `/candidate register`.
+4. The FEC advances to `primary_campaign`; citizens campaign.
+5. The FEC advances to `primary_results`, enters nonpresidential votes, and
+   previews then publishes every primary result.
+6. Published Governor, Senate, and House primary winners automatically qualify
+   for the general. The FEC marks presidential nominees with `/fec nominee-set`.
+7. The FEC advances to `general_campaign`. This permanently deletes primary
+   submissions, points, vote totals, adjustments, and duplicate-use records.
+8. General-election campaign scoring begins from zero.
+9. The FEC advances to `general_results`, enters votes, previews results, and
+   publishes them. Presidential races instead produce the private state-by-state
+   campaign-point CSV.
+10. The FEC closes the cycle. A closed cycle can later be permanently deleted
+    with `/fec cycle-delete`.
 
 ## Local setup
 
@@ -157,36 +164,21 @@ It does not need Administrator permission.
 The bot synchronizes its guild slash commands whenever it starts, so command
 changes appear without a separate registration step.
 
-## Geography configuration
+## Geography enforcement
 
 Campaign targets are always the real 50 United States. The race itself determines
 where points are aggregated:
 
 - President: each state is reported separately
-- Governor and Senate: points aggregate within the selected commonwealth race
-- House: points aggregate within the selected district race
+- Governor and Senate: only states assigned to that commonwealth are accepted
+- House: only states assigned to that exact district are accepted
 
-Until the FEC supplies exact assignments, the bot accepts any state selected for
-any race. To turn on geographic validation:
-
-1. Copy `config/geography.example.json` to `config/geography.json`.
-2. Fill in each state's `commonwealth` and `houseDistrict`.
-3. Set `GEOGRAPHY_FILE=config/geography.json`.
-4. Restart the bot.
-
-Example:
-
-```json
-{
-  "Example State": {
-    "commonwealth": "Sierra",
-    "houseDistrict": "Sierra D2"
-  }
-}
-```
-
-Use real state names in the actual file. Valid district labels are `Sierra D1`,
-`Amarillo D2`, and so forth.
+The complete official mapping is stored in `config/geography.json` and loaded by
+default. State autocomplete filters its choices after the user selects a race,
+and the server validates the assignment again before recording a submission.
+Presidential campaigning remains available in all 50 states. D.C. is part of
+Franklin District 5 for project reference but is not a campaign target because
+the bot targets the 50 states only.
 
 ## Data and privacy
 
@@ -218,4 +210,5 @@ can be added later if permanent media preservation becomes necessary.
 
 The tests cover all scoring boundaries, normalized speech fingerprints, allowed
 file types, file-size limits, item ownership, cooldowns, reuse limits, no-campaign
-results, adjustments, ties, the 50-state list, five commonwealths, and 21 districts.
+results, adjustments, ties, integrated election commands, all 50 state
+assignments, five commonwealths, and 21 districts.

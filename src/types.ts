@@ -24,7 +24,22 @@ export type Ideology = (typeof IDEOLOGY_VALUES)[number];
 
 export type ElectionKind = "presidential" | "midterm";
 export type ElectionStage = "primary" | "general";
-export type CyclePhase = "draft" | "signup" | "campaign" | "paused" | "closed";
+export type CyclePhase =
+  | "draft"
+  | "signup"
+  | "primary_campaign"
+  | "primary_results"
+  | "general_campaign"
+  | "general_results"
+  | "paused"
+  | "closed";
+export type CyclePhaseAction = CyclePhase | "resume";
+export type DeadlineType =
+  | "signup"
+  | "primary_campaign"
+  | "primary_voting"
+  | "general_campaign"
+  | "general_voting";
 export type OfficeType = "president" | "governor" | "senate" | "house";
 export type SubmissionType = "poster" | "video" | "speech";
 
@@ -36,6 +51,7 @@ export interface CycleRow {
   stage: ElectionStage;
   senate_class: number;
   phase: CyclePhase;
+  paused_from_phase: Exclude<CyclePhase, "paused" | "closed"> | null;
   governor_regions: string[];
   created_by_user_id: string;
   created_at: Date;
@@ -60,6 +76,7 @@ export interface CandidateEntryRow {
   candidate_profile_id: string;
   status: "active" | "withdrawn" | "disqualified";
   is_presidential_nominee: boolean;
+  advanced_to_general: boolean;
   running_mate_user_id: string | null;
   discord_user_id: string;
   display_name: string;

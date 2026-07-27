@@ -20,7 +20,10 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   TIME_ZONE: z.string().default("America/New_York"),
   BOT_TONE: z.string().default("formal-casual"),
-  GEOGRAPHY_FILE: z.string().optional().default(""),
+  GEOGRAPHY_FILE: z
+    .string()
+    .optional()
+    .default("config/geography.json"),
 });
 
 export interface AppConfig {
@@ -75,6 +78,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     databaseSsl: value.DATABASE_SSL,
     timeZone: value.TIME_ZONE,
     botTone: value.BOT_TONE,
-    geographyFile: value.GEOGRAPHY_FILE || null,
+    geographyFile: value.GEOGRAPHY_FILE || "config/geography.json",
   };
 }

@@ -7,7 +7,10 @@ import {
 import type { AppConfig } from "../config.js";
 import { UNITED_STATES } from "../geography.js";
 import type { Repository } from "../repository.js";
-import type { StateGeography } from "../services/geography-config.js";
+import {
+  allowedStatesForRace,
+  type StateGeography,
+} from "../services/geography-config.js";
 import type { Party } from "../types.js";
 
 export interface CommandContext {
@@ -110,7 +113,17 @@ export async function handleCommonAutocomplete(
   const query = String(focused.value).trim().toLowerCase();
 
   if (focused.name === "state" || focused.name === "home-state") {
-    const matches = UNITED_STATES.filter((state) =>
+    let allowedStates: readonly string[] = UNITED_STATES;
+    if (focused.name === "state") {
+      const raceId = interaction.options.getString("race");
+      if (raceId) {
+        const race = await context.repository.getRace(raceId);
+        if (race) {
+          allowedStates = allowedStatesForRace(context.geography, race);
+        }
+      }
+    }
+    const matches = allowedStates.filter((state) =>
       state.toLowerCase().includes(query),
     )
       .slice(0, 25)
@@ -126,7 +139,17 @@ export async function handleCommonAutocomplete(
         ? (["signup"] as const)
         : interaction.commandName === "campaign" &&
             interaction.options.getSubcommand(false) === "submit"
-          ? (["campaign"] as const)
+          ? (["primary_campaign", "general_campaign"] as const)
+          : interaction.commandName === "fec" &&
+              interaction.options.getSubcommand(false) === "cycle-delete"
+            ? (["closed"] as const)
+            : interaction.commandName === "fec" &&
+                [
+                  "votes-enter",
+                  "adjustment-add",
+                  "results",
+                ].includes(interaction.options.getSubcommand(false) ?? "")
+              ? (["primary_results", "general_results"] as const)
           : undefined;
     const cycles = await context.repository.listCycles(
       interaction.guildId ?? context.config.guildId,
@@ -165,10 +188,24 @@ export async function handleCommonAutocomplete(
       return true;
     }
     const raceId = interaction.options.getString("race") ?? undefined;
+    const cycle = await context.repository.getCycle(
+      cycleId,
+      interaction.guildId ?? context.config.guildId,
+    );
+    const subcommand = interaction.options.getSubcommand(false);
+    const usesGeneralBallot =
+      interaction.commandName === "campaign" ||
+      (interaction.commandName === "fec" &&
+        (subcommand === "votes-enter" || subcommand === "adjustment-add"));
+    const nomineesOnly =
+      usesGeneralBallot &&
+      (cycle?.phase === "general_campaign" ||
+        cycle?.phase === "general_results");
     const entries = await context.repository.listCandidateEntries(cycleId, {
       ...(raceId ? { raceId } : {}),
       search: query,
       activeOnly: true,
+      nomineesOnly,
     });
     await interaction.respond(
       entries.map((entry) => ({

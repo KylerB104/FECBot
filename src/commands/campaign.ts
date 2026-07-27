@@ -84,15 +84,26 @@ async function submit(
 
   const state = findState(stateInput);
   if (!state) throw new Error("Select one of the 50 United States.");
-  const [cycle, race, candidate, campaignDeadline] = await Promise.all([
-    context.repository.getCycle(cycleId, interaction.guildId ?? undefined),
-    context.repository.getRace(raceId),
-    context.repository.getCandidateEntry(candidateEntryId),
-    context.repository.getCycleDeadline(cycleId, "campaign"),
-  ]);
-  if (!cycle || cycle.phase !== "campaign") {
+  const cycle = await context.repository.getCycle(
+    cycleId,
+    interaction.guildId ?? undefined,
+  );
+  if (
+    !cycle ||
+    (cycle.phase !== "primary_campaign" &&
+      cycle.phase !== "general_campaign")
+  ) {
     throw new Error("Campaigning is not open for that cycle.");
   }
+  const campaignDeadlineType =
+    cycle.phase === "primary_campaign"
+      ? "primary_campaign"
+      : "general_campaign";
+  const [race, candidate, campaignDeadline] = await Promise.all([
+    context.repository.getRace(raceId),
+    context.repository.getCandidateEntry(candidateEntryId),
+    context.repository.getCycleDeadline(cycleId, campaignDeadlineType),
+  ]);
   if (campaignDeadline && campaignDeadline.getTime() <= Date.now()) {
     throw new Error("The campaign deadline has passed.");
   }
@@ -107,6 +118,9 @@ async function submit(
     candidate.status !== "active"
   ) {
     throw new Error("The selected candidate is not active in that race.");
+  }
+  if (cycle.phase === "general_campaign" && !candidate.advanced_to_general) {
+    throw new Error("That candidate did not qualify for the general election.");
   }
 
   await interaction.deferReply();
@@ -294,7 +308,7 @@ async function calendar(
                       )
                       .join(" · ")}`;
               return (
-                `• **${cycle.name}** — ${cycle.stage} ${cycle.election_kind} · ` +
+                `• **${cycle.name}** — ${cycle.election_kind} · ` +
                 `**${cycle.phase}**${deadlineText}`
               );
             })
@@ -315,9 +329,9 @@ async function help(interaction: ChatInputCommandInteraction): Promise<void> {
         .setTitle("Campaign rules")
         .setDescription(
           [
-            "**Posters:** 1 point, 10 MB maximum, eight uses per cycle, one-hour reuse cooldown.",
-            "**Video advertisements:** 2 points, 50 MB maximum, five uses per cycle, two-hour reuse cooldown.",
-            "**Speeches:** 1 point per 500 characters, 2,000-character maximum, one use per cycle.",
+            "**Posters:** 1 point, 10 MB maximum, eight uses per election phase, one-hour reuse cooldown.",
+            "**Video advertisements:** 2 points, 50 MB maximum, five uses per election phase, two-hour reuse cooldown.",
+            "**Speeches:** 1 point per 500 characters, 2,000-character maximum, one use per election phase.",
             "",
             "The same material may be reused only for the same candidate and race. Different original material may be submitted immediately. External media links and GIFs are not accepted.",
             "",
@@ -400,7 +414,11 @@ export async function handleCampaignButton(
       pending.cycle_id,
       pending.guild_id,
     );
-    if (!cycle || cycle.phase !== "campaign") {
+    if (
+      !cycle ||
+      (cycle.phase !== "primary_campaign" &&
+        cycle.phase !== "general_campaign")
+    ) {
       throw new Error("The campaign phase closed before this was confirmed.");
     }
 
@@ -541,7 +559,11 @@ export async function handleCampaignOverrideModal(
       pending.cycle_id,
       pending.guild_id,
     );
-    if (!cycle || cycle.phase !== "campaign") {
+    if (
+      !cycle ||
+      (cycle.phase !== "primary_campaign" &&
+        cycle.phase !== "general_campaign")
+    ) {
       throw new Error("The campaign phase is no longer open.");
     }
     const reason = interaction.fields.getTextInputValue("reason").trim();

@@ -5,7 +5,11 @@ import {
   normalizeCommonwealthList,
   UNITED_STATES,
 } from "../src/geography.js";
-import { validateStateForRace } from "../src/services/geography-config.js";
+import {
+  allowedStatesForRace,
+  loadStateGeography,
+  validateStateForRace,
+} from "../src/services/geography-config.js";
 
 describe("federal geography", () => {
   it("contains exactly 50 states", () => {
@@ -80,5 +84,50 @@ describe("configured state-to-race validation", () => {
         district_number: 1,
       }),
     ).toThrow(/assigned to Sierra D2/);
+  });
+});
+
+describe("official Federalist Project district map", () => {
+  it("assigns every state to exactly one commonwealth and House district", async () => {
+    const geography = await loadStateGeography("config/geography.json");
+    expect(geography.size).toBe(50);
+    expect([...geography.keys()].sort()).toEqual([...UNITED_STATES].sort());
+  });
+
+  it("filters Senate and governor targeting to the selected commonwealth", async () => {
+    const geography = await loadStateGeography("config/geography.json");
+    const states = allowedStatesForRace(geography, {
+      office_type: "senate",
+      commonwealth: "Amarillo",
+      district_number: null,
+    });
+    expect(states).toEqual([
+      "Arkansas",
+      "Louisiana",
+      "New Mexico",
+      "Oklahoma",
+      "Texas",
+    ]);
+  });
+
+  it("filters House targeting to the selected district", async () => {
+    const geography = await loadStateGeography("config/geography.json");
+    const states = allowedStatesForRace(geography, {
+      office_type: "house",
+      commonwealth: "Dixieland",
+      district_number: 5,
+    });
+    expect(states).toEqual(["Alabama", "Mississippi", "Tennessee"]);
+  });
+
+  it("keeps all 50 states available for presidential campaigning", async () => {
+    const geography = await loadStateGeography("config/geography.json");
+    expect(
+      allowedStatesForRace(geography, {
+        office_type: "president",
+        commonwealth: null,
+        district_number: null,
+      }),
+    ).toEqual([...UNITED_STATES]);
   });
 });

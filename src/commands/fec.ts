@@ -19,9 +19,9 @@ import {
 } from "../geography.js";
 import { isElectionAdministrator } from "../permissions.js";
 import type {
-  CyclePhase,
+  CyclePhaseAction,
+  DeadlineType,
   ElectionKind,
-  ElectionStage,
   Party,
 } from "../types.js";
 import {
@@ -52,6 +52,9 @@ export async function handleFecCommand(
         return;
       case "cycle-phase":
         await cyclePhase(interaction, context);
+        return;
+      case "cycle-delete":
+        await cycleDelete(interaction, context);
         return;
       case "deadline-set":
         await deadlineSet(interaction, context);
@@ -130,10 +133,10 @@ async function deadlineSet(
 ): Promise<void> {
   requireSecretaryOrOwner(interaction, context);
   const cycleId = interaction.options.getString("cycle", true);
-  const deadlineType = interaction.options.getString("deadline", true) as
-    | "signup"
-    | "campaign"
-    | "voting";
+  const deadlineType = interaction.options.getString(
+    "deadline",
+    true,
+  ) as DeadlineType;
   const when = interaction.options.getString("when", true);
   const cycle = await context.repository.getCycle(
     cycleId,
@@ -247,7 +250,6 @@ async function cycleCreate(
     "kind",
     true,
   ) as ElectionKind;
-  const stage = interaction.options.getString("stage", true) as ElectionStage;
   const senateClass = interaction.options.getInteger("senate-class", true);
   const governorInput = interaction.options.getString("governors", true);
   const governorRegions = normalizeCommonwealthList(governorInput);
@@ -261,7 +263,6 @@ async function cycleCreate(
     guildId: interaction.guildId!,
     name,
     electionKind,
-    stage,
     senateClass,
     governorRegions,
     createdByUserId: interaction.user.id,
@@ -276,7 +277,11 @@ async function cycleCreate(
         )
         .addFields(
           { name: "Election", value: electionKind, inline: true },
-          { name: "Stage", value: stage, inline: true },
+          {
+            name: "Election path",
+            value: "Primary → General",
+            inline: true,
+          },
           {
             name: "Senate class",
             value: romanNumeral(senateClass),
@@ -299,13 +304,52 @@ async function cycleCreate(
   });
 }
 
+async function cycleDelete(
+  interaction: ChatInputCommandInteraction,
+  context: CommandContext,
+): Promise<void> {
+  requireSecretaryOrOwner(interaction, context);
+  const cycleId = interaction.options.getString("cycle", true);
+  const confirmationName = interaction.options
+    .getString("confirm-name", true)
+    .trim();
+  const reason = interaction.options.getString("reason", true).trim();
+  const deletedName = await context.repository.deleteClosedCycle({
+    guildId: interaction.guildId!,
+    cycleId,
+    confirmationName,
+    reason,
+    actorUserId: interaction.user.id,
+  });
+  await interaction.reply({
+    embeds: [
+      new EmbedBuilder()
+        .setTitle("Election cycle permanently deleted")
+        .setDescription(
+          `**${deletedName}** and all election data attached to it were removed from the database.`,
+        )
+        .addFields({ name: "Reason", value: reason })
+        .setColor(0x7a271a)
+        .setTimestamp(),
+    ],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 async function cyclePhase(
   interaction: ChatInputCommandInteraction,
   context: CommandContext,
 ): Promise<void> {
   const cycleId = interaction.options.getString("cycle", true);
-  const phase = interaction.options.getString("phase", true) as CyclePhase;
-  if (phase === "signup" || phase === "campaign") {
+  const phase = interaction.options.getString(
+    "phase",
+    true,
+  ) as CyclePhaseAction;
+  if (
+    phase === "signup" ||
+    phase === "primary_campaign" ||
+    phase === "general_campaign"
+  ) {
     requireSecretaryOrOwner(interaction, context);
   }
   const cycle = await context.repository.setCyclePhase(
@@ -320,8 +364,19 @@ async function cyclePhase(
     embeds: [
       new EmbedBuilder()
         .setTitle("Cycle phase changed")
-        .setDescription(`**${cycle.name}** is now **${phase}**.`)
-        .setColor(phase === "paused" || phase === "closed" ? 0x7a271a : 0x157f3b)
+        .setDescription(`**${cycle.name}** is now **${cycle.phase}**.`)
+        .setColor(
+          cycle.phase === "paused" || cycle.phase === "closed"
+            ? 0x7a271a
+            : 0x157f3b,
+        )
+        .setFooter(
+          cycle.phase === "general_campaign"
+            ? {
+                text: "Primary campaign submissions, points, votes, adjustments, and duplicate-use records were permanently reset.",
+              }
+            : null,
+        )
         .setTimestamp(),
     ],
   });
@@ -398,29 +453,31 @@ async function nomineeSet(
   if (
     !cycle ||
     !existingEntry ||
-    existingEntry.cycle_id !== cycle.id ||
-    existingEntry.office_type !== "president"
+    existingEntry.cycle_id !== cycle.id
   ) {
-    throw new Error("The selected presidential cycle and candidate do not match.");
+    throw new Error("The selected cycle and candidate do not match.");
   }
-  const entry = await context.repository.setPresidentialNominee(
+  if (isNominee && existingEntry.status !== "active") {
+    throw new Error("Only an active candidate can be marked as a nominee.");
+  }
+  const entry = await context.repository.setGeneralElectionNominee(
     interaction.guildId!,
     entryId,
     isNominee,
     interaction.user.id,
   );
   if (!entry) {
-    throw new Error("That entry is not a presidential candidacy.");
+    throw new Error("That candidate entry does not exist.");
   }
 
   await interaction.reply({
     embeds: [
       new EmbedBuilder()
-        .setTitle("Presidential nominee status updated")
+        .setTitle("General-election nominee status updated")
         .setDescription(
           isNominee
-            ? `**${entry.display_name}** is now recognized as the presidential nominee and may appoint a running mate.`
-            : `**${entry.display_name}** is no longer marked as the presidential nominee.`,
+            ? `**${entry.display_name}** is now recognized as a general-election nominee${entry.office_type === "president" ? " and may appoint a running mate" : ""}.`
+            : `**${entry.display_name}** is no longer marked as a general-election nominee.`,
         )
         .setColor(isNominee ? 0x157f3b : 0x7a271a)
         .setTimestamp(),
@@ -528,6 +585,15 @@ async function results(
   if (!cycle || !race || race.cycle_id !== cycle.id) {
     throw new Error("The selected cycle or race is invalid.");
   }
+  if (
+    cycle.phase !== "primary_results" &&
+    cycle.phase !== "general_results"
+  ) {
+    throw new Error(
+      "Results can be calculated only during the Primary Results or General Results phase.",
+    );
+  }
+  const isPrimary = cycle.phase === "primary_results";
 
   if (action === "calculate" || race.office_type === "president") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -539,6 +605,7 @@ async function results(
     const report = await context.repository.getPresidentialCampaignReport(
       raceId,
       UNITED_STATES,
+      !isPrimary,
     );
     if (report.length === 0) {
       throw new Error("No presidential campaign points have been recorded.");
@@ -579,7 +646,7 @@ async function results(
     return;
   }
 
-  const inputs = await context.repository.getResultInputs(raceId);
+  const inputs = await context.repository.getResultInputs(raceId, !isPrimary);
   if (inputs.length === 0) {
     throw new Error("No active candidates are registered in that race.");
   }
@@ -590,10 +657,9 @@ async function results(
         `Missing: ${missingVotes.map((item) => item.displayName).join(", ")}`,
     );
   }
-  const groups =
-    cycle.stage === "primary"
-      ? groupByParty(inputs)
-      : new Map([["general", inputs]]);
+  const groups = isPrimary
+    ? groupByParty(inputs)
+    : new Map([["general", inputs]]);
   const sections: string[] = [];
   const resultData: Array<{
     group: string;
@@ -615,7 +681,7 @@ async function results(
     let outcomeText = "No winner could be determined.";
     if (outcome.kind === "winner") {
       outcomeText =
-        cycle.stage === "primary"
+        isPrimary
           ? `**${capitalize(group)} nominee: ${outcome.result.displayName}**`
           : `**Winner: ${outcome.result.displayName}**`;
     } else if (outcome.kind === "tie") {
@@ -624,7 +690,7 @@ async function results(
         outcome.results.map((item) => item.displayName).join(", ");
     }
     sections.push(
-      `${cycle.stage === "primary" ? `### ${capitalize(group)} primary\n` : ""}` +
+      `${isPrimary ? `### ${capitalize(group)} primary\n` : ""}` +
         `${resultLines.join("\n\n")}\n\n${outcomeText}`,
     );
     resultData.push({ group, calculated, outcome });
@@ -638,6 +704,19 @@ async function results(
     actorUserId: interaction.user.id,
     publish: action === "publish",
   });
+  if (action === "publish" && isPrimary) {
+    const nomineeEntryIds = resultData.flatMap((group) =>
+      group.outcome.kind === "winner"
+        ? [group.outcome.result.candidateEntryId]
+        : [],
+    );
+    await context.repository.replaceGeneralElectionNominees(
+      interaction.guildId!,
+      raceId,
+      nomineeEntryIds,
+      interaction.user.id,
+    );
+  }
 
   const fullDescription = sections.join("\n\n");
   const visibleDescription =
@@ -655,7 +734,9 @@ async function results(
         .setFooter({
           text:
             action === "publish"
-              ? "Official FEC publication · detailed campaign points remain private"
+              ? isPrimary
+                ? "Official primary publication · winners automatically qualified for the general election"
+                : "Official FEC publication · detailed campaign points remain private"
               : "Private calculation preview",
         })
         .setColor(
@@ -861,5 +942,16 @@ async function validateRaceCandidate(
     candidate.race_id !== race.id
   ) {
     throw new Error("The cycle, race, and candidate selections do not match.");
+  }
+  if (
+    cycle.phase !== "primary_results" &&
+    cycle.phase !== "general_results"
+  ) {
+    throw new Error(
+      "Votes and result adjustments may be entered only during a results phase.",
+    );
+  }
+  if (cycle.phase === "general_results" && !candidate.advanced_to_general) {
+    throw new Error("That candidate did not qualify for the general election.");
   }
 }

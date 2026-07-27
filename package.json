@@ -1,6 +1,6 @@
 {
   "name": "the-federalist-project-fec",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Discord election and campaign administration bot for The Federalist Project",
   "type": "module",

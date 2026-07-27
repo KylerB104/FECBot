@@ -258,16 +258,6 @@ const fec = new SlashCommandBuilder()
             { name: "Midterm", value: "midterm" },
           ),
       )
-      .addStringOption((option) =>
-        option
-          .setName("stage")
-          .setDescription("Primary or general stage")
-          .setRequired(true)
-          .addChoices(
-            { name: "Primary", value: "primary" },
-            { name: "General", value: "general" },
-          ),
-      )
       .addIntegerOption((option) =>
         option
           .setName("senate-class")
@@ -286,7 +276,7 @@ const fec = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("cycle-phase")
-      .setDescription("Move a cycle between signup, campaign, paused, and closed")
+      .setDescription("Advance, pause, resume, or close an election cycle")
       .addStringOption((option) =>
         option
           .setName("cycle")
@@ -301,8 +291,12 @@ const fec = new SlashCommandBuilder()
           .setRequired(true)
           .addChoices(
             { name: "Signup open", value: "signup" },
-            { name: "Campaigning open", value: "campaign" },
+            { name: "Primary campaigning", value: "primary_campaign" },
+            { name: "Primary results", value: "primary_results" },
+            { name: "General campaigning", value: "general_campaign" },
+            { name: "General results", value: "general_results" },
             { name: "Paused", value: "paused" },
+            { name: "Resume previous phase", value: "resume" },
             { name: "Closed", value: "closed" },
           ),
       ),
@@ -310,7 +304,7 @@ const fec = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("deadline-set")
-      .setDescription("Set a signup, campaign, or voting deadline in Eastern Time")
+      .setDescription("Set an election deadline in Eastern Time")
       .addStringOption((option) =>
         option
           .setName("cycle")
@@ -325,8 +319,16 @@ const fec = new SlashCommandBuilder()
           .setRequired(true)
           .addChoices(
             { name: "Candidate signup closes", value: "signup" },
-            { name: "Campaigning closes", value: "campaign" },
-            { name: "Voting closes", value: "voting" },
+            {
+              name: "Primary campaigning closes",
+              value: "primary_campaign",
+            },
+            { name: "Primary voting closes", value: "primary_voting" },
+            {
+              name: "General campaigning closes",
+              value: "general_campaign",
+            },
+            { name: "General voting closes", value: "general_voting" },
           ),
       )
       .addStringOption((option) =>
@@ -335,6 +337,34 @@ const fec = new SlashCommandBuilder()
           .setDescription("Eastern Time: YYYY-MM-DD HH:MM, such as 2026-08-15 20:00")
           .setMinLength(16)
           .setMaxLength(16)
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("cycle-delete")
+      .setDescription("Permanently delete a closed election cycle")
+      .addStringOption((option) =>
+        option
+          .setName("cycle")
+          .setDescription("Closed election cycle")
+          .setAutocomplete(true)
+          .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName("confirm-name")
+          .setDescription("Type the cycle name exactly to confirm deletion")
+          .setMinLength(1)
+          .setMaxLength(100)
+          .setRequired(true),
+      )
+      .addStringOption((option) =>
+        option
+          .setName("reason")
+          .setDescription("Required audit explanation")
+          .setMinLength(3)
+          .setMaxLength(500)
           .setRequired(true),
       ),
   )
@@ -446,18 +476,18 @@ const fec = new SlashCommandBuilder()
   .addSubcommand((command) =>
     command
       .setName("nominee-set")
-      .setDescription("Mark or unmark the FEC-recognized presidential nominee")
+      .setDescription("Mark or unmark a general-election nominee")
       .addStringOption((option) =>
         option
           .setName("cycle")
-          .setDescription("Presidential cycle")
+          .setDescription("Election cycle")
           .setAutocomplete(true)
           .setRequired(true),
       )
       .addStringOption((option) =>
         option
           .setName("candidate")
-          .setDescription("Presidential candidate")
+          .setDescription("Candidate")
           .setAutocomplete(true)
           .setRequired(true),
       )

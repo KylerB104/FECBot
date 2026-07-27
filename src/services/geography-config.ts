@@ -45,6 +45,11 @@ export async function loadStateGeography(
         `Geography file assigns ${state} to an unknown commonwealth: ${assignment.commonwealth}`,
       );
     }
+    if (!assignment.commonwealth || !assignment.houseDistrict) {
+      throw new Error(
+        `Geography file must assign ${state} to both a commonwealth and House district.`,
+      );
+    }
     if (assignment.houseDistrict) {
       const match =
         /^(Sierra|Amarillo|Franklin|Lincoln|Dixieland) D([1-5])$/.exec(
@@ -70,7 +75,37 @@ export async function loadStateGeography(
     }
     result.set(state, assignment);
   }
+  const missingStates = UNITED_STATES.filter((state) => !result.has(state));
+  if (missingStates.length > 0) {
+    throw new Error(
+      `Geography file is missing state assignments: ${missingStates.join(", ")}`,
+    );
+  }
   return result;
+}
+
+export function allowedStatesForRace(
+  geography: StateGeography,
+  race: {
+    office_type: "president" | "governor" | "senate" | "house";
+    commonwealth: string | null;
+    district_number: number | null;
+  },
+): string[] {
+  if (race.office_type === "president" || geography.size === 0) {
+    return [...UNITED_STATES];
+  }
+  return UNITED_STATES.filter((state) => {
+    const assignment = geography.get(state);
+    if (!assignment) return false;
+    if (race.office_type === "governor" || race.office_type === "senate") {
+      return assignment.commonwealth === race.commonwealth;
+    }
+    return (
+      assignment.houseDistrict ===
+      `${race.commonwealth} D${race.district_number}`
+    );
+  });
 }
 
 export function validateStateForRace(
@@ -83,12 +118,14 @@ export function validateStateForRace(
   },
 ): void {
   if (race.office_type === "president") return;
+  if (geography.size === 0) return;
   const assignment = geography.get(state);
-  if (!assignment) return;
+  if (!assignment) {
+    throw new Error(`${state} does not have a configured election district.`);
+  }
 
   if (
     (race.office_type === "governor" || race.office_type === "senate") &&
-    assignment.commonwealth &&
     assignment.commonwealth !== race.commonwealth
   ) {
     throw new Error(
@@ -97,7 +134,6 @@ export function validateStateForRace(
   }
   if (
     race.office_type === "house" &&
-    assignment.houseDistrict &&
     assignment.houseDistrict !== `${race.commonwealth} D${race.district_number}`
   ) {
     throw new Error(

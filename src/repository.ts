@@ -6,10 +6,11 @@ import type { RaceSeed } from "./geography.js";
 import type {
   CampaignSubmissionRow,
   CandidateEntryRow,
+  CyclePhaseAction,
   CyclePhase,
   CycleRow,
+  DeadlineType,
   ElectionKind,
-  ElectionStage,
   Party,
   PendingSubmissionRow,
   RaceRow,
@@ -30,7 +31,6 @@ export interface CreateCycleInput {
   guildId: string;
   name: string;
   electionKind: ElectionKind;
-  stage: ElectionStage;
   senateClass: number;
   governorRegions: string[];
   createdByUserId: string;
@@ -84,6 +84,7 @@ const ENTRY_SELECT = `
     ce.candidate_profile_id,
     ce.status,
     ce.is_presidential_nominee,
+    ce.advanced_to_general,
     ce.running_mate_user_id,
     cp.discord_user_id,
     cp.display_name,
@@ -107,14 +108,13 @@ export class Repository {
         `INSERT INTO election_cycles (
           id, guild_id, name, election_kind, stage, senate_class,
           governor_regions, created_by_user_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ) VALUES ($1, $2, $3, $4, 'primary', $5, $6, $7)
         RETURNING *`,
         [
           cycleId,
           input.guildId,
           input.name,
           input.electionKind,
-          input.stage,
           input.senateClass,
           input.governorRegions,
           input.createdByUserId,
@@ -149,7 +149,6 @@ export class Repository {
         details: {
           name: input.name,
           electionKind: input.electionKind,
-          stage: input.stage,
           senateClass: input.senateClass,
           governorRegions: input.governorRegions,
           raceCount: input.races.length,
@@ -165,7 +164,7 @@ export class Repository {
   async setCyclePhase(
     guildId: string,
     cycleId: string,
-    phase: CyclePhase,
+    action: CyclePhaseAction,
     actorUserId: string,
   ): Promise<CycleRow | null> {
     return withTransaction(this.pool, async (client) => {
@@ -182,25 +181,77 @@ export class Repository {
       }
       const allowedTransitions: Record<CyclePhase, CyclePhase[]> = {
         draft: ["signup", "closed"],
-        signup: ["campaign", "paused", "closed"],
-        campaign: ["paused", "closed"],
-        paused: ["signup", "campaign", "closed"],
+        signup: ["primary_campaign", "paused", "closed"],
+        primary_campaign: ["primary_results", "paused", "closed"],
+        primary_results: ["general_campaign", "paused", "closed"],
+        general_campaign: ["general_results", "paused", "closed"],
+        general_results: ["paused", "closed"],
+        paused: ["closed"],
         closed: [],
       };
+      let phase: CyclePhase;
+      let pausedFromPhase = current.paused_from_phase;
+      if (action === "resume") {
+        if (current.phase !== "paused" || !current.paused_from_phase) {
+          throw new Error("Only a paused cycle with a saved phase can be resumed.");
+        }
+        phase = current.paused_from_phase;
+        pausedFromPhase = null;
+      } else {
+        phase = action;
+        if (phase === "paused") {
+          if (current.phase === "paused") {
+            throw new Error("That cycle is already paused.");
+          }
+          pausedFromPhase = current.phase as Exclude<
+            CyclePhase,
+            "paused" | "closed"
+          >;
+        } else if (current.phase !== "paused") {
+          pausedFromPhase = null;
+        }
+      }
       if (
         phase !== current.phase &&
+        action !== "resume" &&
         !allowedTransitions[current.phase].includes(phase)
       ) {
         throw new Error(
           `A cycle cannot move directly from ${current.phase} to ${phase}.`,
         );
       }
+      const beginsGeneral =
+        current.phase === "primary_results" && phase === "general_campaign";
+      if (beginsGeneral) {
+        await client.query(
+          "DELETE FROM pending_submissions WHERE cycle_id = $1",
+          [cycleId],
+        );
+        await client.query(
+          "DELETE FROM campaign_submissions WHERE cycle_id = $1",
+          [cycleId],
+        );
+        await client.query("DELETE FROM vote_totals WHERE cycle_id = $1", [
+          cycleId,
+        ]);
+        await client.query(
+          "DELETE FROM result_adjustments WHERE cycle_id = $1",
+          [cycleId],
+        );
+      }
+      const stage =
+        phase === "general_campaign" || phase === "general_results"
+          ? "general"
+          : current.stage;
       const result = await client.query<CycleRow>(
         `UPDATE election_cycles
-         SET phase = $1, updated_at = now()
-         WHERE id = $2 AND guild_id = $3
+         SET phase = $1,
+             stage = $2,
+             paused_from_phase = $3,
+             updated_at = now()
+         WHERE id = $4 AND guild_id = $5
          RETURNING *`,
-        [phase, cycleId, guildId],
+        [phase, stage, pausedFromPhase, cycleId, guildId],
       );
       const row = result.rows[0] ?? null;
       if (row) {
@@ -210,7 +261,11 @@ export class Repository {
           eventType: "cycle.phase_changed",
           entityType: "cycle",
           entityId: cycleId,
-          details: { phase },
+          details: {
+            phase,
+            action,
+            primaryCampaignDataDeleted: beginsGeneral,
+          },
         });
       }
       return row;
@@ -220,7 +275,7 @@ export class Repository {
   async setCycleDeadline(input: {
     guildId: string;
     cycleId: string;
-    deadlineType: "signup" | "campaign" | "voting";
+    deadlineType: DeadlineType;
     deadlineAt: Date;
     actorUserId: string;
   }): Promise<void> {
@@ -293,14 +348,14 @@ export class Repository {
   ): Promise<
     Array<{
       cycle_id: string;
-      deadline_type: "signup" | "campaign" | "voting";
+      deadline_type: DeadlineType;
       deadline_at: Date;
     }>
   > {
     if (cycleIds.length === 0) return [];
     const result = await this.pool.query<{
       cycle_id: string;
-      deadline_type: "signup" | "campaign" | "voting";
+      deadline_type: DeadlineType;
       deadline_at: Date;
     }>(
       `SELECT cycle_id, deadline_type, deadline_at
@@ -314,7 +369,7 @@ export class Repository {
 
   async getCycleDeadline(
     cycleId: string,
-    deadlineType: "signup" | "campaign" | "voting",
+    deadlineType: DeadlineType,
   ): Promise<Date | null> {
     const result = await this.pool.query<{ deadline_at: Date }>(
       `SELECT deadline_at
@@ -333,7 +388,7 @@ export class Repository {
     Array<{
       cycleId: string;
       cycleName: string;
-      deadlineType: "signup" | "campaign" | "voting";
+      deadlineType: DeadlineType;
       deadlineAt: Date;
       hoursBefore: 24 | 6 | 1;
     }>
@@ -342,7 +397,7 @@ export class Repository {
       const deadlines = await client.query<{
         cycle_id: string;
         cycle_name: string;
-        deadline_type: "signup" | "campaign" | "voting";
+        deadline_type: DeadlineType;
         deadline_at: Date;
       }>(
         `SELECT
@@ -363,7 +418,7 @@ export class Repository {
       const claimed: Array<{
         cycleId: string;
         cycleName: string;
-        deadlineType: "signup" | "campaign" | "voting";
+        deadlineType: DeadlineType;
         deadlineAt: Date;
         hoursBefore: 24 | 6 | 1;
       }> = [];
@@ -409,6 +464,49 @@ export class Repository {
     }
     const result = await this.pool.query<CycleRow>(sql, values);
     return result.rows[0] ?? null;
+  }
+
+  async deleteClosedCycle(input: {
+    guildId: string;
+    cycleId: string;
+    confirmationName: string;
+    reason: string;
+    actorUserId: string;
+  }): Promise<string> {
+    return withTransaction(this.pool, async (client) => {
+      const result = await client.query<CycleRow>(
+        `SELECT * FROM election_cycles
+         WHERE id = $1 AND guild_id = $2
+         FOR UPDATE`,
+        [input.cycleId, input.guildId],
+      );
+      const cycle = result.rows[0];
+      if (!cycle) throw new Error("That cycle does not exist.");
+      if (cycle.phase !== "closed") {
+        throw new Error("Only a closed election cycle can be deleted.");
+      }
+      if (input.confirmationName !== cycle.name) {
+        throw new Error("The confirmation name does not exactly match the cycle.");
+      }
+      await this.insertAudit(client, {
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        eventType: "cycle.deleted",
+        entityType: "cycle",
+        entityId: cycle.id,
+        details: {
+          name: cycle.name,
+          reason: input.reason,
+          electionKind: cycle.election_kind,
+          senateClass: cycle.senate_class,
+        },
+      });
+      await client.query(
+        "DELETE FROM election_cycles WHERE id = $1 AND guild_id = $2",
+        [input.cycleId, input.guildId],
+      );
+      return cycle.name;
+    });
   }
 
   async listCycles(
@@ -557,7 +655,12 @@ export class Repository {
 
   async listCandidateEntries(
     cycleId: string,
-    options: { raceId?: string; search?: string; activeOnly?: boolean } = {},
+    options: {
+      raceId?: string;
+      search?: string;
+      activeOnly?: boolean;
+      nomineesOnly?: boolean;
+    } = {},
   ): Promise<CandidateEntryRow[]> {
     const conditions = ["ce.cycle_id = $1"];
     const values: unknown[] = [cycleId];
@@ -571,6 +674,9 @@ export class Repository {
     }
     if (options.activeOnly) {
       conditions.push("ce.status = 'active'");
+    }
+    if (options.nomineesOnly) {
+      conditions.push("ce.advanced_to_general = true");
     }
     const result = await this.pool.query<CandidateEntryRow>(
       `${ENTRY_SELECT}
@@ -614,7 +720,7 @@ export class Repository {
     });
   }
 
-  async setPresidentialNominee(
+  async setGeneralElectionNominee(
     guildId: string,
     entryId: string,
     isNominee: boolean,
@@ -623,11 +729,15 @@ export class Repository {
     return withTransaction(this.pool, async (client) => {
       const updated = await client.query(
         `UPDATE candidate_entries ce
-         SET is_presidential_nominee = $1, updated_at = now()
+         SET advanced_to_general = $1,
+             is_presidential_nominee =
+               CASE WHEN r.office_type = 'president' THEN $1
+                    ELSE ce.is_presidential_nominee END,
+             updated_at = now()
          FROM races r
          WHERE ce.id = $2
            AND r.id = ce.race_id
-           AND r.office_type = 'president'
+           AND ($1::boolean = false OR ce.status = 'active')
          RETURNING ce.id`,
         [isNominee, entryId],
       );
@@ -635,7 +745,7 @@ export class Repository {
       await this.insertAudit(client, {
         guildId,
         actorUserId,
-        eventType: "candidate.presidential_nominee_changed",
+        eventType: "candidate.general_nominee_changed",
         entityType: "candidate_entry",
         entityId: entryId,
         details: { isNominee },
@@ -645,6 +755,31 @@ export class Repository {
         [entryId],
       );
       return result.rows[0] ?? null;
+    });
+  }
+
+  async replaceGeneralElectionNominees(
+    guildId: string,
+    raceId: string,
+    nomineeEntryIds: readonly string[],
+    actorUserId: string,
+  ): Promise<void> {
+    await withTransaction(this.pool, async (client) => {
+      await client.query(
+        `UPDATE candidate_entries
+         SET advanced_to_general = (id = ANY($1::uuid[])),
+             updated_at = now()
+         WHERE race_id = $2`,
+        [nomineeEntryIds, raceId],
+      );
+      await this.insertAudit(client, {
+        guildId,
+        actorUserId,
+        eventType: "candidate.primary_nominees_replaced",
+        entityType: "race",
+        entityId: raceId,
+        details: { nomineeEntryIds },
+      });
     });
   }
 
@@ -846,17 +981,25 @@ export class Repository {
          FROM election_cycles ec
          JOIN candidate_entries ce ON ce.id = $2
          WHERE ec.id = $1
-           AND ec.phase = 'campaign'
+           AND ec.phase IN ('primary_campaign', 'general_campaign')
            AND NOT EXISTS (
              SELECT 1
              FROM cycle_deadlines cd
              WHERE cd.cycle_id = ec.id
-               AND cd.deadline_type = 'campaign'
+               AND cd.deadline_type =
+                 CASE ec.phase
+                   WHEN 'primary_campaign' THEN 'primary_campaign'
+                   ELSE 'general_campaign'
+                 END
                AND cd.deadline_at <= now()
            )
            AND ce.cycle_id = ec.id
            AND ce.race_id = $3
            AND ce.status = 'active'
+           AND (
+             ec.phase <> 'general_campaign' OR
+             ce.advanced_to_general = true
+           )
          FOR SHARE`,
         [pending.cycle_id, pending.candidate_entry_id, pending.race_id],
       );
@@ -1013,17 +1156,25 @@ export class Repository {
          FROM election_cycles ec
          JOIN candidate_entries ce ON ce.id = $2
          WHERE ec.id = $1
-           AND ec.phase = 'campaign'
+           AND ec.phase IN ('primary_campaign', 'general_campaign')
            AND NOT EXISTS (
              SELECT 1
              FROM cycle_deadlines cd
              WHERE cd.cycle_id = ec.id
-               AND cd.deadline_type = 'campaign'
+               AND cd.deadline_type =
+                 CASE ec.phase
+                   WHEN 'primary_campaign' THEN 'primary_campaign'
+                   ELSE 'general_campaign'
+                 END
                AND cd.deadline_at <= now()
            )
            AND ce.cycle_id = ec.id
            AND ce.race_id = $3
            AND ce.status = 'active'
+           AND (
+             ec.phase <> 'general_campaign' OR
+             ce.advanced_to_general = true
+           )
          FOR SHARE`,
         [pending.cycle_id, pending.candidate_entry_id, pending.race_id],
       );
@@ -1223,7 +1374,10 @@ export class Repository {
     });
   }
 
-  async getResultInputs(raceId: string): Promise<ResultCandidateInput[]> {
+  async getResultInputs(
+    raceId: string,
+    nomineesOnly = false,
+  ): Promise<ResultCandidateInput[]> {
     const result = await this.pool.query<{
       candidate_entry_id: string;
       display_name: string;
@@ -1255,9 +1409,11 @@ export class Repository {
          FROM result_adjustments ra
          WHERE ra.candidate_entry_id = ce.id AND ra.race_id = ce.race_id
        ) DISTINCT_ADJUSTMENTS ON true
-       WHERE ce.race_id = $1 AND ce.status = 'active'
+       WHERE ce.race_id = $1
+         AND ce.status = 'active'
+         AND ($2::boolean = false OR ce.advanced_to_general = true)
        ORDER BY cp.display_name`,
-      [raceId],
+      [raceId, nomineesOnly],
     );
     return result.rows.map((row) => ({
       candidateEntryId: row.candidate_entry_id,
@@ -1273,6 +1429,7 @@ export class Repository {
   async getPresidentialCampaignReport(
     raceId: string,
     states: readonly string[],
+    nomineesOnly = false,
   ): Promise<
     Array<{
       candidate_entry_id: string;
@@ -1304,11 +1461,13 @@ export class Repository {
          ON cs.candidate_entry_id = ce.id
          AND cs.race_id = $1
          AND cs.target_state = states.target_state
-       WHERE ce.race_id = $1 AND ce.status = 'active'
+       WHERE ce.race_id = $1
+         AND ce.status = 'active'
+         AND ($3::boolean = false OR ce.advanced_to_general = true)
        GROUP BY
          ce.id, cp.display_name, cp.home_state, states.target_state
        ORDER BY states.target_state, points DESC, cp.display_name`,
-      [raceId, states],
+      [raceId, states, nomineesOnly],
     );
     return result.rows.map((row) => ({ ...row, points: Number(row.points) }));
   }
